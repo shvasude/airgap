@@ -1,4 +1,4 @@
-$#!/bin/bash -xe
+#!/bin/bash -xe
 
 CATALOG_IMAGE=$CATALOG_IMAGE
 CATALOG_USER='redhat'
