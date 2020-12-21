@@ -1,17 +1,19 @@
 #!/bin/bash -xe
 
-CATALOG_IMAGE=$CATALOG_IMAGE
-CATALOG_USER='redhat'
-CATALOG_IMAGE_NAME='redhat-operator-index'
-CATALOG_IMAGE_TAG='v4.6'
-OUTPUT_IMAGE=$MIRROR_REGISTRY
-PRODUCT_NAME=${1:-binding}
+#MIRROR_REGISTRY
+
+CATALOG_IMAGE_REGISTRY=${CATALOG_IMAGE_REGISTRY:-quay.io}
+CATALOG_IMAGE_ORG=${CATALOG_IMAGE_ORG:-$QUAY_USERNAME}
+CATALOG_IMAGE_NAME=${CATALOG_IMAGE_NAME:-servicebinding-operator}
+CATALOG_IMAGE_TAG=${CATALOG_IMAGE_TAG:-index}
+PRODUCT_NAME=${PRODUCT_NAME:-service-binding}
 CATALOG_SOURCE_NAME='sb-operator-test'
 
-MIRROR_IMAGE_LOCATION=$OUTPUT_IMAGE/$CATALOG_USER/$CATALOG_IMAGE_NAME:$CATALOG_IMAGE_TAG
+CATALOG_INDEX_IMAGE=$CATALOG_IMAGE_REGISTRY/$CATALOG_IMAGE_ORG/$CATALOG_IMAGE_NAME:$CATALOG_IMAGE_TAG
+MIRROR_IMAGE=$MIRROR_REGISTRY/$CATALOG_IMAGE_ORG/$CATALOG_IMAGE_NAME:$CATALOG_IMAGE_TAG
 
-USER_NAME="dummy"
-PASSWORD="dummy"
+REGISTRY_USER="${REGISTRY_USER:-dummy}"
+REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-dummy}"
 
 function mirror_images()
 {
@@ -37,31 +39,23 @@ metadata:
   name: mirror-registry
 spec:
   repositoryDigestMirrors:
-    - mirrors:
-        - $OUTPUT_IMAGE
-      source: registry.redhat.io
-    - mirrors:
-        - $OUTPUT_IMAGE
-      source: registry.stage.redhat.io
-    - mirrors:
-        - $OUTPUT_IMAGE
-      source: registry-proxy.engineering.redhat.com
     - mirrors:  
-        - $OUTPUT_IMAGE
-      source: quay.io/redhat-developer
+        - $MIRROR_REGISTRY/$CATALOG_IMAGE_ORG/$CATALOG_IMAGE_NAME
+      source: $CATALOG_IMAGE_REGISTRY/$CATALOG_IMAGE_ORG/$CATALOG_IMAGE_NAME
 EOD
 
+sleep 10
 check_if_nodes_ready
 
-oc registry login --registry $OUTPUT_IMAGE --auth-basic=$USER_NAME:$PASSWORD --insecure=true
+oc registry login --registry $MIRROR_REGISTRY --auth-basic=$REGISTRY_USER:$REGISTRY_USER --insecure=true
 echo "oc logged into registry"
 
 # mirroring the index image
-manifests_result="$(oc image mirror $CATALOG_IMAGE $MIRROR_IMAGE_LOCATION --insecure)"
+manifests_result="$(oc image mirror $CATALOG_INDEX_IMAGE $MIRROR_IMAGE --insecure)"
 
 CATALOG_IMAGE_SHA=$(echo $manifests_result | awk '{print $1}')
 
-oc adm catalog mirror $CATALOG_IMAGE@$CATALOG_IMAGE_SHA $OUTPUT_IMAGE --filter-by-os="linux/amd64" --insecure --manifests-only
+oc adm catalog mirror $CATALOG_IMAGE_REGISTRY/$CATALOG_IMAGE_ORG/$CATALOG_IMAGE_NAME@$CATALOG_IMAGE_SHA $MIRROR_IMAGE --to-manifests=$CATALOG_IMAGE_NAME-manifests --filter-by-os="linux/amd64" --insecure --manifests-only
 
 grep $PRODUCT_NAME $CATALOG_IMAGE_NAME-manifests/mapping.txt > $CATALOG_IMAGE_NAME-manifests/$PRODUCT_NAME.txt
 
@@ -77,19 +71,8 @@ while read mapping;
       done
     done < $CATALOG_IMAGE_NAME-manifests/$PRODUCT_NAME.txt
 
+AUTHFILE=$(readlink -m .authfile)
+podman login --authfile $AUTHFILE --username $REGISTRY_USER --password $REGISTRY_PASSWORD $MIRROR_REGISTRY --tls-verify=false
 
-kubectl apply -f - << EOD
-apiVersion: operators.coreos.com/v1alpha1
-kind: CatalogSource
-metadata:
-  name: $CATALOG_SOURCE_NAME
-  namespace: openshift-marketplace
-spec:
-  sourceType: grpc
-  image: $MIRROR_IMAGE_LOCATION
-  displayName: $CATALOG_SOURCE_NAME
-  updateStrategy:
-    registryPoll:
-      interval: 30m
-EOD
-export CATALOG_SOURCE_NAME=$CATALOG_SOURCE_NAME
+# Use index.sh from SBO repo to install SBO from a given catalog index image
+curl -s https://raw.githubusercontent.com/redhat-developer/service-binding-operator/master/install.sh | OPERATOR_INDEX_IMAGE=$CATALOG_INDEX_IMAGE DOCKER_CFG=$AUTHFILE /bin/bash -s
